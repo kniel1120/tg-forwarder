@@ -2,6 +2,7 @@ import os
 import asyncio
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.types import MessageEntityCustomEmoji
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -29,10 +30,34 @@ client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
 async def _forward(event, tag):
+    msg = event.message
     try:
-        await client.forward_messages(DEST_CHAT, event.message)
-    except Exception as e:
-        print(f"Forward error ({tag}): {e}", flush=True)
+        await client.forward_messages(DEST_CHAT, msg)
+        return
+    except Exception as forward_err:
+        print(f"Native forward blocked ({tag}): {forward_err.__class__.__name__}; falling back to copy", flush=True)
+
+    text = msg.text or ""
+    entities = [
+        ent for ent in (msg.entities or [])
+        if not isinstance(ent, MessageEntityCustomEmoji)
+    ]
+    try:
+        if msg.media:
+            await client.send_file(
+                DEST_CHAT,
+                msg.media,
+                caption=text,
+                formatting_entities=entities or None,
+            )
+        else:
+            await client.send_message(
+                DEST_CHAT,
+                text,
+                formatting_entities=entities or None,
+            )
+    except Exception as copy_err:
+        print(f"Copy-send also failed ({tag}): {copy_err}", flush=True)
 
 
 async def main():
