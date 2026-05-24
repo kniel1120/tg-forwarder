@@ -28,13 +28,11 @@ SOURCE_USERS_RAW = [
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-if SOURCE_CHATS:
-    @client.on(events.NewMessage(chats=SOURCE_CHATS))
-    async def chat_handler(event):
-        try:
-            await client.forward_messages(DEST_CHAT, event.message)
-        except Exception as e:
-            print(f"Forward error (chat): {e}", flush=True)
+async def _forward(event, tag):
+    try:
+        await client.forward_messages(DEST_CHAT, event.message)
+    except Exception as e:
+        print(f"Forward error ({tag}): {e}", flush=True)
 
 
 async def main():
@@ -43,8 +41,6 @@ async def main():
         raise RuntimeError("SESSION_STRING invalid or expired — regenerate with session_gen.py")
     me = await client.get_me()
     print(f"Logged in as: {me.first_name} ({me.id})", flush=True)
-    if SOURCE_CHATS:
-        print(f"Watching {len(SOURCE_CHATS)} source chat(s) -> {DEST_CHAT}", flush=True)
 
     resolved_user_ids = []
     for u in SOURCE_USERS_RAW:
@@ -52,20 +48,39 @@ async def main():
             entity = await client.get_entity(u)
             resolved_user_ids.append(entity.id)
             uname = f"@{entity.username}" if getattr(entity, "username", None) else "(no username)"
-            print(f"Watching user: {entity.first_name} {uname} [{entity.id}]", flush=True)
+            print(f"Resolved user: {entity.first_name} {uname} [{entity.id}]", flush=True)
         except Exception as e:
             print(f"WARNING: failed to resolve user '{u}': {e}", flush=True)
 
-    if resolved_user_ids:
-        async def user_handler(event):
-            if event.chat_id in SOURCE_CHATS:
-                return
-            try:
-                await client.forward_messages(DEST_CHAT, event.message)
-            except Exception as e:
-                print(f"Forward error (user): {e}", flush=True)
-
-        client.add_event_handler(user_handler, events.NewMessage(from_users=resolved_user_ids))
+    if SOURCE_CHATS and resolved_user_ids:
+        async def handler(event):
+            await _forward(event, "user-in-chat")
+        client.add_event_handler(
+            handler,
+            events.NewMessage(chats=SOURCE_CHATS, from_users=resolved_user_ids),
+        )
+        print(
+            f"Mode: filtering {len(resolved_user_ids)} user(s) in {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
+            flush=True,
+        )
+    elif SOURCE_CHATS:
+        async def handler(event):
+            await _forward(event, "chat")
+        client.add_event_handler(handler, events.NewMessage(chats=SOURCE_CHATS))
+        print(
+            f"Mode: forwarding all messages from {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
+            flush=True,
+        )
+    elif resolved_user_ids:
+        async def handler(event):
+            await _forward(event, "user")
+        client.add_event_handler(handler, events.NewMessage(from_users=resolved_user_ids))
+        print(
+            f"Mode: forwarding from {len(resolved_user_ids)} user(s) anywhere -> {DEST_CHAT}",
+            flush=True,
+        )
+    else:
+        print("WARNING: no SOURCE_CHATS or SOURCE_USERS set — nothing will be forwarded", flush=True)
 
     print("Forwarder running!", flush=True)
     await client.run_until_disconnected()
