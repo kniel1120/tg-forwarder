@@ -10,7 +10,7 @@ SOURCE_CHATS = [int(x.strip()) for x in os.environ.get("SOURCE_CHATS", "").split
 DEST_CHAT = int(os.environ["DEST_CHAT"])
 
 
-def _parse_user(raw):
+def _parse_sender(raw):
     raw = raw.strip()
     if not raw:
         return None
@@ -21,7 +21,7 @@ def _parse_user(raw):
 
 
 SOURCE_USERS_RAW = [
-    u for u in (_parse_user(x) for x in os.environ.get("SOURCE_USERS", "").split(","))
+    u for u in (_parse_sender(x) for x in os.environ.get("SOURCE_USERS", "").split(","))
     if u is not None
 ]
 
@@ -42,25 +42,25 @@ async def main():
     me = await client.get_me()
     print(f"Logged in as: {me.first_name} ({me.id})", flush=True)
 
-    resolved_user_ids = []
+    sender_ids = set()
     for u in SOURCE_USERS_RAW:
         try:
             entity = await client.get_entity(u)
-            resolved_user_ids.append(entity.id)
+            sender_ids.add(entity.id)
+            kind = type(entity).__name__
             uname = f"@{entity.username}" if getattr(entity, "username", None) else "(no username)"
-            print(f"Resolved user: {entity.first_name} {uname} [{entity.id}]", flush=True)
+            label = getattr(entity, "first_name", None) or getattr(entity, "title", "?")
+            print(f"Resolved sender: {label} {uname} [{entity.id}, {kind}]", flush=True)
         except Exception as e:
-            print(f"WARNING: failed to resolve user '{u}': {e}", flush=True)
+            print(f"WARNING: failed to resolve sender '{u}': {e}", flush=True)
 
-    if SOURCE_CHATS and resolved_user_ids:
+    if SOURCE_CHATS and sender_ids:
         async def handler(event):
-            await _forward(event, "user-in-chat")
-        client.add_event_handler(
-            handler,
-            events.NewMessage(chats=SOURCE_CHATS, from_users=resolved_user_ids),
-        )
+            if event.sender_id in sender_ids:
+                await _forward(event, "sender-in-chat")
+        client.add_event_handler(handler, events.NewMessage(chats=SOURCE_CHATS))
         print(
-            f"Mode: filtering {len(resolved_user_ids)} user(s) in {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
+            f"Mode: filtering {len(sender_ids)} sender(s) in {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
             flush=True,
         )
     elif SOURCE_CHATS:
@@ -71,12 +71,13 @@ async def main():
             f"Mode: forwarding all messages from {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
             flush=True,
         )
-    elif resolved_user_ids:
+    elif sender_ids:
         async def handler(event):
-            await _forward(event, "user")
-        client.add_event_handler(handler, events.NewMessage(from_users=resolved_user_ids))
+            if event.sender_id in sender_ids:
+                await _forward(event, "sender")
+        client.add_event_handler(handler, events.NewMessage())
         print(
-            f"Mode: forwarding from {len(resolved_user_ids)} user(s) anywhere -> {DEST_CHAT}",
+            f"Mode: forwarding from {len(sender_ids)} sender(s) anywhere -> {DEST_CHAT}",
             flush=True,
         )
     else:
