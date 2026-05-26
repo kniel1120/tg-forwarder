@@ -1,5 +1,8 @@
 import os
+import time
+import hashlib
 import asyncio
+from collections import OrderedDict
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageEntityCustomEmoji
@@ -26,11 +29,45 @@ SOURCE_USERS_RAW = [
     if u is not None
 ]
 
+DEDUP_WINDOW_SECONDS = int(os.environ.get("DEDUP_WINDOW_SECONDS", "600"))
+_recent_fingerprints: "OrderedDict[str, float]" = OrderedDict()
+
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+
+def _message_fingerprint(msg):
+    text = (msg.text or "").strip()
+    media_kind = type(msg.media).__name__ if msg.media else ""
+    if not text and not media_kind:
+        return None
+    return hashlib.md5(f"{text}|{media_kind}".encode("utf-8")).hexdigest()
+
+
+def _is_duplicate(msg):
+    if DEDUP_WINDOW_SECONDS <= 0:
+        return False
+    fp = _message_fingerprint(msg)
+    if fp is None:
+        return False
+    now = time.time()
+    cutoff = now - DEDUP_WINDOW_SECONDS
+    while _recent_fingerprints:
+        oldest_fp, oldest_ts = next(iter(_recent_fingerprints.items()))
+        if oldest_ts >= cutoff:
+            break
+        _recent_fingerprints.popitem(last=False)
+    if fp in _recent_fingerprints:
+        return True
+    _recent_fingerprints[fp] = now
+    return False
 
 
 async def _forward(event, tag):
     msg = event.message
+    if _is_duplicate(msg):
+        preview = (msg.text or "").strip().splitlines()[0][:60] if msg.text else "<media>"
+        print(f"Skipped duplicate ({tag}): {preview!r}", flush=True)
+        return
     try:
         await client.forward_messages(DEST_CHAT, msg)
         return
@@ -116,6 +153,10 @@ async def main():
     else:
         print("WARNING: no SOURCE_CHATS or SOURCE_USERS set — nothing will be forwarded", flush=True)
 
+    if DEDUP_WINDOW_SECONDS > 0:
+        print(f"Dedup: skip duplicate messages within {DEDUP_WINDOW_SECONDS}s window", flush=True)
+    else:
+        print("Dedup: disabled", flush=True)
     print("Forwarder running!", flush=True)
     await client.run_until_disconnected()
 
