@@ -134,7 +134,21 @@ async def _forward(event, tag):
             )
             return
         except Exception as upload_err:
-            print(f"Re-upload failed ({tag}): {upload_err}", flush=True)
+            print(f"Re-upload failed ({tag}): {upload_err.__class__.__name__}; sending text only", flush=True)
+
+        # Attempt 4: last resort — send caption text only, drop the media
+        if text:
+            try:
+                await client.send_message(
+                    DEST_CHAT,
+                    text,
+                    formatting_entities=entities,
+                )
+                return
+            except Exception as text_only_err:
+                print(f"Text-only send failed ({tag}): {text_only_err}", flush=True)
+        else:
+            print(f"Media-only message and all sends failed ({tag}); dropping", flush=True)
         return
 
     # No media — just text
