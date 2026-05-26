@@ -1,11 +1,15 @@
 import os
+import io
 import time
 import hashlib
 import asyncio
 from collections import OrderedDict
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import MessageEntityCustomEmoji
+from telethon.tl.types import (
+    MessageEntityCustomEmoji,
+    MessageMediaPhoto,
+)
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -63,39 +67,85 @@ def _is_duplicate(msg):
     return False
 
 
+def _guess_filename(media):
+    if isinstance(media, MessageMediaPhoto):
+        return "image.jpg"
+    doc = getattr(media, "document", None)
+    if doc is not None:
+        for attr in getattr(doc, "attributes", []) or []:
+            name = getattr(attr, "file_name", None)
+            if name:
+                return name
+        mime = getattr(doc, "mime_type", "") or ""
+        if mime.startswith("image/"):
+            ext = mime.split("/", 1)[1].split(";", 1)[0] or "jpg"
+            return f"image.{ext}"
+        if mime.startswith("video/"):
+            return "video.mp4"
+        if mime.startswith("audio/"):
+            return "audio.ogg"
+    return "file.bin"
+
+
 async def _forward(event, tag):
     msg = event.message
     if _is_duplicate(msg):
         preview = (msg.text or "").strip().splitlines()[0][:60] if msg.text else "<media>"
         print(f"Skipped duplicate ({tag}): {preview!r}", flush=True)
         return
+
+    # Attempt 1: native forward (preserves attribution)
     try:
         await client.forward_messages(DEST_CHAT, msg)
         return
     except Exception as forward_err:
-        print(f"Native forward blocked ({tag}): {forward_err.__class__.__name__}; falling back to copy", flush=True)
+        print(f"Native forward blocked ({tag}): {forward_err.__class__.__name__}; trying copy", flush=True)
 
     text = msg.text or ""
     entities = [
         ent for ent in (msg.entities or [])
         if not isinstance(ent, MessageEntityCustomEmoji)
-    ]
-    try:
-        if msg.media:
+    ] or None
+
+    # Attempt 2: send media directly (works when source isn't a protected chat)
+    if msg.media:
+        try:
             await client.send_file(
                 DEST_CHAT,
                 msg.media,
                 caption=text,
-                formatting_entities=entities or None,
+                formatting_entities=entities,
             )
-        else:
-            await client.send_message(
+            return
+        except Exception as copy_err:
+            print(f"Direct copy failed ({tag}): {copy_err.__class__.__name__}; re-uploading", flush=True)
+
+        # Attempt 3: download media bytes and re-upload as fresh file
+        try:
+            buffer = io.BytesIO()
+            await client.download_media(msg, file=buffer)
+            buffer.seek(0)
+            buffer.name = _guess_filename(msg.media)
+            await client.send_file(
                 DEST_CHAT,
-                text,
-                formatting_entities=entities or None,
+                buffer,
+                caption=text,
+                formatting_entities=entities,
             )
-    except Exception as copy_err:
-        print(f"Copy-send also failed ({tag}): {copy_err}", flush=True)
+            return
+        except Exception as upload_err:
+            print(f"Re-upload failed ({tag}): {upload_err}", flush=True)
+        return
+
+    # No media — just text
+    try:
+        await client.send_message(
+            DEST_CHAT,
+            text,
+            formatting_entities=entities,
+        )
+    except Exception as text_err:
+        print(f"Text send failed ({tag}): {text_err}", flush=True)
 
 
 async def main():
