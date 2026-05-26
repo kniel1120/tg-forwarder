@@ -30,6 +30,7 @@ SOURCE_USERS_RAW = [
 ]
 
 DEDUP_WINDOW_SECONDS = int(os.environ.get("DEDUP_WINDOW_SECONDS", "600"))
+VERBOSE = os.environ.get("VERBOSE", "").strip().lower() in ("1", "true", "yes", "on")
 _recent_fingerprints: "OrderedDict[str, float]" = OrderedDict()
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
@@ -118,15 +119,20 @@ async def main():
 
     if SOURCE_CHATS and sender_ids:
         async def handler(event):
-            # Match if:
-            #  (a) message is a broadcast-channel post (anonymous admin signal), OR
-            #  (b) sender is one of our targeted users, OR
-            #  (c) sender is one of our source channels (channel-as-sender, e.g. linked group)
-            if (
-                event.message.post
+            msg = event.message
+            matched = (
+                msg.post
                 or event.sender_id in sender_ids
                 or event.sender_id in SOURCE_CHATS
-            ):
+            )
+            if VERBOSE:
+                preview = (msg.text or "").strip().splitlines()[0][:60] if msg.text else "<media>"
+                print(
+                    f"DEBUG event: chat={event.chat_id} sender={event.sender_id} "
+                    f"post={msg.post} matched={matched} text={preview!r}",
+                    flush=True,
+                )
+            if matched:
                 await _forward(event, "matched")
         client.add_event_handler(handler, events.NewMessage(chats=SOURCE_CHATS))
         print(
@@ -157,6 +163,8 @@ async def main():
         print(f"Dedup: skip duplicate messages within {DEDUP_WINDOW_SECONDS}s window", flush=True)
     else:
         print("Dedup: disabled", flush=True)
+    if VERBOSE:
+        print("VERBOSE: logging every received event (set VERBOSE=0 to disable)", flush=True)
     print("Forwarder running!", flush=True)
     await client.run_until_disconnected()
 
