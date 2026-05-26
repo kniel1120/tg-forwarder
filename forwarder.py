@@ -81,11 +81,19 @@ async def main():
 
     if SOURCE_CHATS and sender_ids:
         async def handler(event):
-            if event.sender_id in sender_ids:
-                await _forward(event, "sender-in-chat")
+            # Match if:
+            #  (a) message is a broadcast-channel post (anonymous admin signal), OR
+            #  (b) sender is one of our targeted users, OR
+            #  (c) sender is one of our source channels (channel-as-sender, e.g. linked group)
+            if (
+                event.message.post
+                or event.sender_id in sender_ids
+                or event.sender_id in SOURCE_CHATS
+            ):
+                await _forward(event, "matched")
         client.add_event_handler(handler, events.NewMessage(chats=SOURCE_CHATS))
         print(
-            f"Mode: filtering {len(sender_ids)} sender(s) in {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
+            f"Mode: filtering channel-posts + {len(sender_ids)} sender(s) in {len(SOURCE_CHATS)} chat(s) -> {DEST_CHAT}",
             flush=True,
         )
     elif SOURCE_CHATS:
